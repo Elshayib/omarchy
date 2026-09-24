@@ -13,7 +13,10 @@
 #
 # Split on ':' like Aquamarine (removeEmpty). A by-path name absorbs colon
 # fragments until it exists or ends in udev's -card/-control/-render suffix.
-# A continuation containing '/' starts a new entry.
+# A finished PCI BDF (domain:bus:dev.func) has no further colon fragment:
+# udev hyphenates -card onto that function, so the next token is a new entry.
+# A continuation containing '/' starts a new entry. A path already emitted
+# is skipped, so a by-path and a cardN for the same node are not duplicated.
 
 omarchy_sanitize_aq_drm_emit() {
   _omarchy_aq_path=$1
@@ -29,6 +32,12 @@ omarchy_sanitize_aq_drm_emit() {
       esac
       _omarchy_aq_path=$_omarchy_aq_real
       ;;
+  esac
+
+  # Aquamarine appends each match with no dedupe. Skip a node already emitted
+  # so a by-path and the cardN it resolves to are not both exported.
+  case ":${_omarchy_aq_out}:" in
+    *":${_omarchy_aq_path}:"*) return 0 ;;
   esac
 
   if [[ -n $_omarchy_aq_out ]]; then
@@ -66,6 +75,7 @@ omarchy_sanitize_aq_drm_devices() {
       else
         # Keep absorbing colon fragments until the by-path exists or hits
         # udev's DRM suffix. A continuation containing '/' is a new entry.
+        # pci-DDDD:BB:DD.F with no hyphenated tail is already a full address.
         _omarchy_aq_glue=
         case "$_omarchy_aq_cur" in
           */by-path/*-card|*/by-path/*-control|*/by-path/*-render)
@@ -74,7 +84,12 @@ omarchy_sanitize_aq_drm_devices() {
             if [[ ! -e $_omarchy_aq_cur ]]; then
               case "$_omarchy_aq_part" in
                 */*) ;;
-                *) _omarchy_aq_glue=1 ;;
+                *)
+                  case "$_omarchy_aq_cur" in
+                    */by-path/pci-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F].[0-7]) ;;
+                    *) _omarchy_aq_glue=1 ;;
+                  esac
+                  ;;
               esac
             fi
             ;;

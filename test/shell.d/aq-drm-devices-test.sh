@@ -78,6 +78,19 @@ pass "stale by-path does not swallow a following cardN pin"
 [[ $(run_sanitize "/dev/dri/by-path/pci-0000:13:00.0:rel/mygpu") == "rel/mygpu" ]] || fail "incomplete by-path does not absorb a slash-containing continuation"
 pass "incomplete by-path does not absorb a slash-containing continuation"
 
+[[ $(run_sanitize "/dev/dri/by-path/pci-0000:77:00.0:card1") == "card1" ]] || fail "malformed by-path missing a udev suffix does not absorb the next pin"
+pass "malformed by-path missing a udev suffix does not absorb the next pin"
+
+[[ $(run_sanitize "/dev/dri/card0:/dev/dri/by-path/pci-0000:77:00.0:8") == "/dev/dri/card0:8" ]] || fail "malformed by-path missing a udev suffix does not absorb the surrounding tokens"
+pass "malformed by-path missing a udev suffix does not absorb the surrounding tokens"
+
+usb_dotted="/dev/dri/by-path/pci-0000:00:14.0-usb-0:1.2:1.0-card"
+[[ $(run_sanitize "$usb_dotted") == "__UNSET__" ]] || fail "dotted USB by-path stays one entry when the suffix is present"
+pass "dotted USB by-path stays one entry when the suffix is present"
+
+[[ $(run_sanitize "$usb_dotted:card1") == "card1" ]] || fail "dotted USB by-path does not swallow a following pin"
+pass "dotted USB by-path does not swallow a following pin"
+
 [[ $(run_sanitize "/dev/dri/by-path/platform-omarchy-test-card") == "__UNSET__" ]] || fail "missing colon-free by-path is dropped instead of exported"
 pass "missing colon-free by-path is dropped instead of exported"
 
@@ -121,6 +134,12 @@ if mkdir -p "$by_dir" && ln -s "$dir/dri/card0" "$by_path" 2>/dev/null; then
 
     [[ $(run_sanitize "$by_path:$dir/dri/card1") == "$dir/dri/card0:$dir/dri/card1" ]] || fail "resolved by-path keeps a following colon-free pin"
     pass "resolved by-path keeps a following colon-free pin"
+
+    [[ $(run_sanitize "$by_path:$dir/dri/card0") == "$dir/dri/card0" ]] || fail "resolved by-path matching a later card is exported once"
+    pass "resolved by-path matching a later card is exported once"
+
+    [[ $(run_sanitize "$dir/dri/card0:$by_path") == "$dir/dri/card0" ]] || fail "resolved by-path matching an earlier card is exported once"
+    pass "resolved by-path matching an earlier card is exported once"
 
     [[ $(run_sanitize "$by_path:rel/mygpu") == "$dir/dri/card0:rel/mygpu" ]] || fail "resolved by-path keeps a following relative entry"
     pass "resolved by-path keeps a following relative entry"
