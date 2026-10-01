@@ -18,7 +18,8 @@ fi
 sudo docker info >/dev/null
 
 found=0
-for name in mysql8 postgres18 mariadb11 redis mongodb mssql; do
+# postgres16 and postgres17 are the names earlier installers used.
+for name in mysql8 postgres16 postgres17 postgres18 mariadb11 redis mongodb mssql; do
   if sudo docker inspect --type container "$name" >/dev/null 2>&1; then
     found=1
     break

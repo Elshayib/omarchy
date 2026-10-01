@@ -122,3 +122,112 @@ SOCKET_DISABLED=1 \
   fail "migration blocks the queue when Docker is switched off"
 [[ ! -s $DOCKER_LOG ]] || fail "migration starts dockerd when Docker is switched off"
 pass "migration leaves Docker alone when it is switched off"
+
+for legacy_name in postgres16 postgres17; do
+  : >"$SYSTEMCTL_LOG"
+  : >"$DOCKER_LOG"
+
+  cat >"$tmp_dir/bin/docker" <<SH
+#!/bin/bash
+printf '%s\n' "\$*" >>"\$DOCKER_LOG"
+if [[ \$1 == "info" ]]; then
+  exit 0
+fi
+if [[ \$1 == "inspect" && \$2 == "--type" && \$3 == "container" && \$4 == "$legacy_name" ]]; then
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$tmp_dir/bin/docker"
+
+  PATH="$tmp_dir/bin:$PATH" \
+  SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+  DOCKER_LOG="$DOCKER_LOG" \
+    bash -euo pipefail "$migration" >/dev/null
+
+  grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG" ||
+    fail "migration does not enable docker.service for $legacy_name"
+  grep -Fqx -- "inspect --type container $legacy_name" "$DOCKER_LOG" ||
+    fail "migration does not inspect $legacy_name"
+  pass "migration enables docker.service for an older $legacy_name container"
+done
+
+installer="$ROOT/bin/omarchy-install-docker-dbs"
+INSTALL_LOG="$tmp_dir/install-log"
+
+cat >"$tmp_dir/bin/sudo" <<'SH'
+#!/bin/bash
+exec "$@"
+SH
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+exit 0
+SH
+
+cat >"$tmp_dir/bin/systemctl" <<'SH'
+#!/bin/bash
+printf 'systemctl %s\n' "$*" >>"$INSTALL_LOG"
+exit 0
+SH
+chmod +x "$tmp_dir/bin/sudo" "$tmp_dir/bin/docker" "$tmp_dir/bin/systemctl"
+
+: >"$INSTALL_LOG"
+PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  bash "$installer" Redis >/dev/null
+seen_run=0
+seen_enable_after_run=0
+while IFS= read -r line; do
+  if [[ $line == docker\ run* ]]; then
+    seen_run=1
+  elif [[ $line == "systemctl enable --now docker.service" && $seen_run == 1 ]]; then
+    seen_enable_after_run=1
+  fi
+done <"$INSTALL_LOG"
+(( seen_enable_after_run )) || fail "installer does not enable docker.service after a container is created" "$(cat "$INSTALL_LOG")"
+pass "installer enables docker.service after a database container is created"
+
+: >"$INSTALL_LOG"
+PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  bash "$installer" "" >/dev/null
+if grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG"; then
+  fail "installer enables docker.service when no database is selected"
+fi
+pass "installer leaves docker.service alone when no database is selected"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+exit 1
+SH
+chmod +x "$tmp_dir/bin/docker"
+: >"$INSTALL_LOG"
+if PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  bash "$installer" Redis >/dev/null 2>&1; then
+  fail "installer succeeds when no database container is created"
+fi
+if grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG"; then
+  fail "installer enables docker.service when no database container is created"
+fi
+pass "installer leaves docker.service alone when container creation fails"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+exit 0
+SH
+cat >"$tmp_dir/bin/systemctl" <<'SH'
+#!/bin/bash
+printf 'systemctl %s\n' "$*" >>"$INSTALL_LOG"
+exit 1
+SH
+chmod +x "$tmp_dir/bin/docker" "$tmp_dir/bin/systemctl"
+: >"$INSTALL_LOG"
+enable_output=$(PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" bash "$installer" Redis 2>&1) &&
+  fail "installer succeeds when enabling docker.service fails"
+[[ $enable_output == *"Failed to enable docker.service"* ]] ||
+  fail "installer does not report a failed docker.service enable" "$enable_output"
+grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
+  fail "installer does not attempt to enable docker.service after creating a container"
+pass "installer fails when enabling docker.service fails"
