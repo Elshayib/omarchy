@@ -184,8 +184,9 @@ services:
       - /home/old/Windows:/shared
 LEG
 priv() { local action=$1; shift; "__priv_$action" "$@"; }
-migrate_legacy_compose
+migrate_legacy_compose >"$TMPDIR/migrate.out"
 [[ -f $COMPOSE_FILE ]] || fail "migration wrote the root-owned compose for an email username"
+grep -q 'web console .* signs in as docker' "$TMPDIR/migrate.out" || fail "migration tells the user the web console login is now docker"
 grep -q 'USERNAME: "docker"' "$COMPOSE_FILE" || fail "migration sanitizes an invalid legacy username to docker"
 grep -q 'USERNAME: "user@example.com"' "$COMPOSE_FILE" && fail "migration must not write an invalid username into the compose"
 [[ $(read_credential USERNAME) == "user@example.com" ]] || fail "RDP credentials keep the original Windows username"

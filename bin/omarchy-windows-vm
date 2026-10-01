@@ -1111,13 +1111,12 @@ migrate_legacy_compose() {
     return 1
   }
 
-  # Pre-4.0.1 installers accepted any username (including emails). The elevated
-  # writer now rejects those. USERNAME is only used during first-run unattend,
-  # so fall back to docker like install does; keep the original for RDP so the
-  # existing Windows account still logs in.
+  # Pre-4.0.1 installers accepted any username, which the elevated writer now rejects.
+  # Past first-run setup USERNAME only names the web console login, so fall back to
+  # docker like install does and keep the original for RDP.
   rdp_username=$username
   if ! valid_username "$username"; then
-    echo "Legacy username is not valid for the compose writer; using docker. The Windows account itself is unchanged."
+    echo "The web console at http://127.0.0.1:8006 now signs in as docker; Windows and RDP keep your existing account."
     username="docker"
     [[ -n $rdp_username ]] || rdp_username="docker"
   fi
