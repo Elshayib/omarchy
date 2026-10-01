@@ -163,6 +163,9 @@ SH
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect ]]; then
+  exit 1
+fi
 exit 0
 SH
 
@@ -215,6 +218,9 @@ pass "installer leaves docker.service alone when container creation fails"
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect ]]; then
+  exit 1
+fi
 exit 0
 SH
 cat >"$tmp_dir/bin/systemctl" <<'SH'
@@ -231,3 +237,48 @@ enable_output=$(PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" bash "$inst
 grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
   fail "installer does not attempt to enable docker.service after creating a container"
 pass "installer fails when enabling docker.service fails"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect ]]; then
+  exit 1
+fi
+if [[ $* == *--name=redis* ]]; then
+  exit 1
+fi
+exit 0
+SH
+cat >"$tmp_dir/bin/systemctl" <<'SH'
+#!/bin/bash
+printf 'systemctl %s\n' "$*" >>"$INSTALL_LOG"
+exit 0
+SH
+chmod +x "$tmp_dir/bin/docker" "$tmp_dir/bin/systemctl"
+: >"$INSTALL_LOG"
+partial_output=$(PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" bash "$installer" MySQL Redis 2>&1) &&
+  fail "installer succeeds when a later database fails"
+[[ $partial_output == *"Not every selected database was installed."* ]] ||
+  fail "installer does not report a partial database install" "$partial_output"
+grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
+  fail "installer does not enable docker.service when another selected database exists"
+pass "installer fails a partial install after enabling docker.service for the database that exists"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect && $4 == redis ]]; then
+  exit 0
+fi
+exit 1
+SH
+chmod +x "$tmp_dir/bin/docker"
+: >"$INSTALL_LOG"
+PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  bash "$installer" Redis >/dev/null
+grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
+  fail "installer does not enable docker.service when the container already exists"
+if grep -F -- "docker run" "$INSTALL_LOG"; then
+  fail "installer recreates a database container that already exists"
+fi
+pass "installer enables docker.service for a database container that already exists"
