@@ -6,6 +6,12 @@ if systemctl is-enabled docker.service >/dev/null 2>&1; then
   exit 0
 fi
 
+# Docker switched off entirely has nothing to bring back, and docker info below
+# would fail on every update and hold up every migration queued after this one.
+if ! systemctl is-enabled docker.socket >/dev/null 2>&1; then
+  exit 0
+fi
+
 # docker info talks to the socket, which is enough to start dockerd so inspect works.
 # Let a cancelled sudo or a down dockerd fail the script so omarchy-migrate
 # leaves this pending instead of marking it complete.

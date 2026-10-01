@@ -23,6 +23,7 @@ cat >"$tmp_dir/bin/systemctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >>"$SYSTEMCTL_LOG"
 if [[ $1 == "is-enabled" ]]; then
+  [[ $2 == "docker.socket" && -z ${SOCKET_DISABLED:-} ]] && exit 0
   exit 1
 fi
 exit 0
@@ -109,3 +110,15 @@ if grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG"; then
   fail "migration enables docker.service after docker info failure"
 fi
 pass "migration stays pending when docker info fails"
+
+: >"$SYSTEMCTL_LOG"
+: >"$DOCKER_LOG"
+
+PATH="$tmp_dir/bin:$PATH" \
+SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+DOCKER_LOG="$DOCKER_LOG" \
+SOCKET_DISABLED=1 \
+  bash -euo pipefail "$migration" >/dev/null 2>&1 ||
+  fail "migration blocks the queue when Docker is switched off"
+[[ ! -s $DOCKER_LOG ]] || fail "migration starts dockerd when Docker is switched off"
+pass "migration leaves Docker alone when it is switched off"
