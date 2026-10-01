@@ -15,7 +15,11 @@ if omarchy-cmd-present tailscale; then
     echo "Tailscale operator is already $operator; leaving it unchanged."
     # 1785101000 may already have started this user's receiver. It cannot
     # receive files without being the operator, so stop the access-denied loop.
-    systemctl --user disable --now omarchy-tailscale-receive.service 2>/dev/null || true
+    if ! error=$(systemctl --user disable --now omarchy-tailscale-receive.service 2>&1); then
+      echo "Could not disable omarchy-tailscale-receive.service: $error"
+      echo "The Tailscale operator repair will be retried by omarchy-migrate."
+      exit 1
+    fi
   else
     if [[ $operator != "$USER" ]]; then
       if ! error=$(sudo tailscale set --operator="$USER" 2>&1); then

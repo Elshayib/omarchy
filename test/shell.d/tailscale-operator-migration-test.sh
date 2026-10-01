@@ -17,6 +17,9 @@ CALL_LOG="$tmp_dir/call-log"
 cat >"$tmp_dir/bin/systemctl" <<'SH'
 #!/bin/bash
 printf 'systemctl %s\n' "$*" >>"$CALL_LOG"
+if [[ $2 == "disable" ]]; then
+  exit "${STUB_DISABLE_STATUS:-0}"
+fi
 exit 0
 SH
 
@@ -112,3 +115,15 @@ printf '%s\n' \
 cmp -s "$CALL_LOG" "$tmp_dir/expected" ||
   fail "migration does not disable a leftover receiver when the operator belongs to someone else" "$(cat "$CALL_LOG")"
 pass "migration disables a leftover receiver when the operator belongs to someone else"
+
+: >"$CALL_LOG"
+
+if USER=omarchy-test \
+PATH="$tmp_dir/bin:$PATH" \
+CALL_LOG="$CALL_LOG" \
+STUB_OPERATOR=other-user \
+STUB_DISABLE_STATUS=1 \
+  bash -euo pipefail "$migration" >/dev/null 2>&1; then
+  fail "migration treats a failed receiver disable as success"
+fi
+pass "migration stays pending when the leftover receiver cannot be disabled"
