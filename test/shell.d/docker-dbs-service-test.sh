@@ -267,7 +267,11 @@ pass "installer fails a partial install after enabling docker.service for the da
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect && $4 == redis ]]; then
+if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+  exit 0
+fi
+if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
+  printf '%s\n' "redis:7 unless-stopped running"
   exit 0
 fi
 exit 1
@@ -281,4 +285,55 @@ grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
 if grep -F -- "docker run" "$INSTALL_LOG"; then
   fail "installer recreates a database container that already exists"
 fi
+if grep -F -- "docker start" "$INSTALL_LOG"; then
+  fail "installer starts a database container that is already running"
+fi
 pass "installer enables docker.service for a database container that already exists"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+  exit 0
+fi
+if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
+  printf '%s\n' "redis:7 unless-stopped exited"
+  exit 0
+fi
+if [[ $1 == start && $2 == redis ]]; then
+  exit 0
+fi
+exit 1
+SH
+chmod +x "$tmp_dir/bin/docker"
+: >"$INSTALL_LOG"
+PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  bash "$installer" Redis >/dev/null
+grep -Fqx -- "docker start redis" "$INSTALL_LOG" ||
+  fail "installer does not start a stopped database container" "$(cat "$INSTALL_LOG")"
+grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
+  fail "installer does not enable docker.service for a stopped database container"
+pass "installer starts a stopped database container and enables docker.service"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
+if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+  exit 0
+fi
+if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
+  printf '%s\n' "redis:latest unless-stopped running"
+  exit 0
+fi
+exit 1
+SH
+chmod +x "$tmp_dir/bin/docker"
+: >"$INSTALL_LOG"
+wrong_output=$(PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" bash "$installer" Redis 2>&1) &&
+  fail "installer accepts a container that is not the selected database"
+[[ $wrong_output == *"is not this database."* ]] ||
+  fail "installer does not report a conflicting container" "$wrong_output"
+if grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG"; then
+  fail "installer enables docker.service for a container that is not the selected database"
+fi
+pass "installer rejects a container that is not the selected database"
