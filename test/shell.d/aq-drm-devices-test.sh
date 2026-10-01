@@ -78,11 +78,11 @@ pass "stale by-path does not swallow a following cardN pin"
 [[ $(run_sanitize "/dev/dri/by-path/pci-0000:13:00.0:rel/mygpu") == "rel/mygpu" ]] || fail "incomplete by-path does not absorb a slash-containing continuation"
 pass "incomplete by-path does not absorb a slash-containing continuation"
 
-[[ $(run_sanitize "/dev/dri/by-path/pci-0000:77:00.0:card1") == "card1" ]] || fail "malformed by-path missing a udev suffix does not absorb the next pin"
-pass "malformed by-path missing a udev suffix does not absorb the next pin"
+[[ $(run_sanitize "/dev/dri/by-path/pci-0000:77:00.0:card1") == "__UNSET__" ]] || fail "malformed by-path absorbs a relative pin and is dropped"
+pass "malformed by-path absorbs a relative pin and is dropped"
 
-[[ $(run_sanitize "/dev/dri/card0:/dev/dri/by-path/pci-0000:77:00.0:8") == "/dev/dri/card0:8" ]] || fail "malformed by-path missing a udev suffix does not absorb the surrounding tokens"
-pass "malformed by-path missing a udev suffix does not absorb the surrounding tokens"
+[[ $(run_sanitize "/dev/dri/card0:/dev/dri/by-path/pci-0000:77:00.0:8") == "/dev/dri/card0" ]] || fail "malformed by-path does not keep a relative token beside a real pin"
+pass "malformed by-path does not keep a relative token beside a real pin"
 
 usb_dotted="/dev/dri/by-path/pci-0000:00:14.0-usb-0:1.2:1.0-card"
 [[ $(run_sanitize "$usb_dotted") == "__UNSET__" ]] || fail "dotted USB by-path stays one entry when the suffix is present"

@@ -13,10 +13,12 @@
 #
 # Split on ':' like Aquamarine (removeEmpty). A by-path name absorbs colon
 # fragments until it exists or ends in udev's -card/-control/-render suffix.
-# A finished PCI BDF (domain:bus:dev.func) has no further colon fragment:
-# udev hyphenates -card onto that function, so the next token is a new entry.
-# A continuation containing '/' starts a new entry. A path already emitted
-# is skipped, so a by-path and a cardN for the same node are not duplicated.
+# A continuation containing '/' starts a new entry. A slash-free continuation
+# stays glued: Aquamarine canonicalizes each entry against the session cwd, so
+# a leftover relative name such as card1 matches nothing and loops login,
+# while absorbing it into a missing by-path drops the entry (unset, autodetect).
+# A path already emitted is skipped, so a by-path and a cardN for the same
+# node are not duplicated.
 
 omarchy_sanitize_aq_drm_emit() {
   _omarchy_aq_path=$1
@@ -75,22 +77,15 @@ omarchy_sanitize_aq_drm_devices() {
       else
         # Keep absorbing colon fragments until the by-path exists or hits
         # udev's DRM suffix. A continuation containing '/' is a new entry.
-        # pci-DDDD:BB:DD.F with no hyphenated tail is already a full address.
+        # Do not split a finished BDF from a relative token: that token is not
+        # a device Aquamarine can open, and exporting it alone is a login loop.
         _omarchy_aq_glue=
         case "$_omarchy_aq_cur" in
           */by-path/*-card|*/by-path/*-control|*/by-path/*-render)
             ;;
           */by-path/*)
-            if [[ ! -e $_omarchy_aq_cur ]]; then
-              case "$_omarchy_aq_part" in
-                */*) ;;
-                *)
-                  case "$_omarchy_aq_cur" in
-                    */by-path/pci-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F].[0-7]) ;;
-                    *) _omarchy_aq_glue=1 ;;
-                  esac
-                  ;;
-              esac
+            if [[ ! -e $_omarchy_aq_cur && $_omarchy_aq_part != */* ]]; then
+              _omarchy_aq_glue=1
             fi
             ;;
         esac
