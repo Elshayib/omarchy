@@ -29,12 +29,24 @@ if omarchy-cmd-present tailscale; then
       fi
     fi
 
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-
-    if ! error=$(systemctl --user enable --now omarchy-tailscale-receive.service 2>&1); then
-      echo "Could not enable omarchy-tailscale-receive.service: $error"
+    if ! receiver_state=$(systemctl --user show --property=UnitFileState --value omarchy-tailscale-receive.service 2>&1); then
+      echo "Could not read omarchy-tailscale-receive.service state: $receiver_state"
       echo "The Tailscale operator repair will be retried by omarchy-migrate."
       exit 1
+    fi
+
+    # Repair receivers enabled by 1785101000 without undoing a user's opt-out
+    # or making runtime-only enablement permanent.
+    if [[ $receiver_state == "enabled" || $receiver_state == "enabled-runtime" ]]; then
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+      if ! error=$(systemctl --user start omarchy-tailscale-receive.service 2>&1); then
+        echo "Could not start omarchy-tailscale-receive.service: $error"
+        echo "The Tailscale operator repair will be retried by omarchy-migrate."
+        exit 1
+      fi
+    else
+      echo "Taildrop receiver is not enabled; leaving it unchanged."
     fi
   fi
 fi
