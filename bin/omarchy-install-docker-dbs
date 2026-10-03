@@ -22,7 +22,12 @@ run_db() {
   shift 2
   if sudo docker inspect --type container "$name" >/dev/null 2>&1; then
     read -r actual_image actual_restart actual_state <<<"$(sudo docker inspect --type container --format '{{.Config.Image}} {{.HostConfig.RestartPolicy.Name}} {{.State.Status}}' "$name")"
-    if [[ $actual_image == $image || $actual_image == */$image ]] && [[ $actual_restart == "unless-stopped" ]]; then
+    if [[ $image != */* ]]; then
+      case $actual_image in
+      "library/$image" | "docker.io/$image" | "docker.io/library/$image" | "index.docker.io/$image" | "index.docker.io/library/$image") actual_image="$image" ;;
+      esac
+    fi
+    if [[ $actual_image == $image && $actual_restart == "unless-stopped" ]]; then
       if [[ $actual_state == "running" ]]; then
         created=1
       elif sudo docker start "$name"; then

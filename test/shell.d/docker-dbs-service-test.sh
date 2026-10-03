@@ -190,7 +190,7 @@ SH
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect ]]; then
+if [[ $1 == "inspect" ]]; then
   exit 1
 fi
 exit 0
@@ -209,9 +209,9 @@ PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
 seen_run=0
 seen_enable_after_run=0
 while IFS= read -r line; do
-  if [[ $line == docker\ run* ]]; then
+  if [[ $line == "docker run"* ]]; then
     seen_run=1
-  elif [[ $line == "systemctl enable --now docker.service" && $seen_run == 1 ]]; then
+  elif [[ $line == "systemctl enable --now docker.service" ]] && (( seen_run == 1 )); then
     seen_enable_after_run=1
   fi
 done <"$INSTALL_LOG"
@@ -245,7 +245,7 @@ pass "installer leaves docker.service alone when container creation fails"
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect ]]; then
+if [[ $1 == "inspect" ]]; then
   exit 1
 fi
 exit 0
@@ -268,10 +268,10 @@ pass "installer fails when enabling docker.service fails"
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect ]]; then
+if [[ $1 == "inspect" ]]; then
   exit 1
 fi
-if [[ $* == *--name=redis* ]]; then
+if [[ $* == *"--name=redis"* ]]; then
   exit 1
 fi
 exit 0
@@ -294,10 +294,10 @@ pass "installer fails a partial install after enabling docker.service for the da
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+if [[ $1 == "inspect" && $2 == "--type" && $4 == "redis" ]]; then
   exit 0
 fi
-if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
+if [[ $1 == "inspect" && $4 == "--format" && $6 == "redis" ]]; then
   printf '%s\n' "redis:7 unless-stopped running"
   exit 0
 fi
@@ -320,14 +320,14 @@ pass "installer enables docker.service for a database container that already exi
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+if [[ $1 == "inspect" && $2 == "--type" && $4 == "redis" ]]; then
   exit 0
 fi
-if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
+if [[ $1 == "inspect" && $4 == "--format" && $6 == "redis" ]]; then
   printf '%s\n' "redis:7 unless-stopped exited"
   exit 0
 fi
-if [[ $1 == start && $2 == redis ]]; then
+if [[ $1 == "start" && $2 == "redis" ]]; then
   exit 0
 fi
 exit 1
@@ -345,11 +345,14 @@ pass "installer starts a stopped database container and enables docker.service"
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf 'docker %s\n' "$*" >>"$INSTALL_LOG"
-if [[ $1 == inspect && $2 == --type && $4 == redis ]]; then
+if [[ $1 == "inspect" && $2 == "--type" && $4 == "redis" ]]; then
   exit 0
 fi
-if [[ $1 == inspect && $4 == --format && $6 == redis ]]; then
-  printf '%s\n' "redis:latest unless-stopped running"
+if [[ $1 == "inspect" && $4 == "--format" && $6 == "redis" ]]; then
+  printf '%s unless-stopped %s\n' "${EXISTING_IMAGE:-redis:latest}" "${EXISTING_STATE:-running}"
+  exit 0
+fi
+if [[ $1 == "start" && $2 == "redis" ]]; then
   exit 0
 fi
 exit 1
@@ -364,3 +367,28 @@ if grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG"; then
   fail "installer enables docker.service for a container that is not the selected database"
 fi
 pass "installer rejects a container that is not the selected database"
+
+: >"$INSTALL_LOG"
+if PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+EXISTING_IMAGE="otheruser/redis:7" EXISTING_STATE="exited" \
+  bash "$installer" Redis >/dev/null 2>&1; then
+  fail "installer accepts an unrelated image repository with the expected tag"
+fi
+if grep -Fqx -- "docker start redis" "$INSTALL_LOG"; then
+  fail "installer starts a conflicting container from an unrelated image repository"
+fi
+if grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG"; then
+  fail "installer enables docker.service for an unrelated image repository"
+fi
+pass "installer rejects an unrelated image repository without starting its container"
+
+for official_image in library/redis:7 docker.io/redis:7 docker.io/library/redis:7 index.docker.io/redis:7 index.docker.io/library/redis:7; do
+  : >"$INSTALL_LOG"
+  PATH="$tmp_dir/bin:$PATH" INSTALL_LOG="$INSTALL_LOG" \
+  EXISTING_IMAGE="$official_image" EXISTING_STATE="running" \
+    bash "$installer" Redis >/dev/null 2>&1 ||
+    fail "installer rejects the official Redis image alias $official_image"
+  grep -Fqx -- "systemctl enable --now docker.service" "$INSTALL_LOG" ||
+    fail "installer does not enable docker.service for $official_image"
+  pass "installer accepts the official Redis image alias $official_image"
+done
