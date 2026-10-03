@@ -23,8 +23,11 @@ cat >"$tmp_dir/bin/systemctl" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >>"$SYSTEMCTL_LOG"
 if [[ $1 == "is-enabled" ]]; then
-  [[ $2 == "docker.socket" && -z ${SOCKET_DISABLED:-} ]] && exit 0
-  exit 1
+  if [[ $2 == "docker.socket" && -z ${SOCKET_DISABLED:-} ]]; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 exit 0
 SH
@@ -35,7 +38,8 @@ printf '%s\n' "$*" >>"$DOCKER_LOG"
 if [[ $1 == "info" ]]; then
   exit 0
 fi
-if [[ $1 == "inspect" && $2 == "--type" && $3 == "container" && $4 == "postgres18" ]]; then
+if [[ $1 == "container" && $2 == "ls" ]]; then
+  printf '%s\n' "postgres18"
   exit 0
 fi
 exit 1
@@ -60,8 +64,6 @@ DOCKER_LOG="$DOCKER_LOG" \
 
 grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG" ||
   fail "migration does not enable docker.service when a Docker DB container exists"
-grep -Fqx -- "inspect --type container postgres18" "$DOCKER_LOG" ||
-  fail "migration does not inspect containers by type"
 pass "migration enables docker.service when a Docker DB container exists"
 
 : >"$SYSTEMCTL_LOG"
@@ -70,7 +72,7 @@ pass "migration enables docker.service when a Docker DB container exists"
 cat >"$tmp_dir/bin/docker" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >>"$DOCKER_LOG"
-if [[ $1 == "info" ]]; then
+if [[ $1 == "info" || ( $1 == "container" && $2 == "ls" ) ]]; then
   exit 0
 fi
 exit 1
@@ -86,6 +88,32 @@ if grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG"; then
   fail "migration enables docker.service when no Docker DB container exists"
 fi
 pass "migration leaves docker.service alone when no Docker DB container exists"
+
+: >"$SYSTEMCTL_LOG"
+: >"$DOCKER_LOG"
+
+cat >"$tmp_dir/bin/docker" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$DOCKER_LOG"
+if [[ $1 == "info" ]]; then
+  exit 0
+else
+  echo "Cannot connect to the Docker daemon" >&2
+  exit 1
+fi
+SH
+chmod +x "$tmp_dir/bin/docker"
+
+if PATH="$tmp_dir/bin:$PATH" \
+SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+DOCKER_LOG="$DOCKER_LOG" \
+  bash -euo pipefail "$migration" >/dev/null 2>&1; then
+  fail "migration treats a failed container query as an empty container list"
+fi
+if grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG"; then
+  fail "migration enables docker.service after a failed container query"
+fi
+pass "migration stays pending when the container query fails after docker info succeeds"
 
 : >"$SYSTEMCTL_LOG"
 : >"$DOCKER_LOG"
@@ -133,7 +161,8 @@ printf '%s\n' "\$*" >>"\$DOCKER_LOG"
 if [[ \$1 == "info" ]]; then
   exit 0
 fi
-if [[ \$1 == "inspect" && \$2 == "--type" && \$3 == "container" && \$4 == "$legacy_name" ]]; then
+if [[ \$1 == "container" && \$2 == "ls" ]]; then
+  printf '%s\n' "$legacy_name"
   exit 0
 fi
 exit 1
@@ -147,8 +176,6 @@ SH
 
   grep -Fqx -- "enable --now docker.service" "$SYSTEMCTL_LOG" ||
     fail "migration does not enable docker.service for $legacy_name"
-  grep -Fqx -- "inspect --type container $legacy_name" "$DOCKER_LOG" ||
-    fail "migration does not inspect $legacy_name"
   pass "migration enables docker.service for an older $legacy_name container"
 done
 
