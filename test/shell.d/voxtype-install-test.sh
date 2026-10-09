@@ -4,6 +4,8 @@ set -euo pipefail
 
 # Dictation install, removal, and menu guards follow the voxtype command, not
 # one package name. Stubs stand in for pacman, sudo, gum, and the compositor.
+# Setup > Defaults owns installation now; Remove still has to see every
+# package that provides the voxtype command.
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
@@ -40,6 +42,14 @@ fi
 exit 1
 EOF
 
+cat >"$test_bin/omarchy-cmd-missing" <<'EOF'
+#!/bin/bash
+if [[ $1 == "voxtype" && $VOXTYPE_PRESENT == "yes" ]]; then
+  exit 1
+fi
+exit 0
+EOF
+
 cat >"$test_bin/pacman" <<'EOF'
 #!/bin/bash
 echo "pacman:$*" >>"$TEST_LOG"
@@ -52,7 +62,7 @@ echo "sudo:$*" >>"$TEST_LOG"
 exit 1
 EOF
 
-for stub_name in voxtype omarchy-hw-vulkan hyprctl omarchy-restart-shell omarchy-notification-send systemctl; do
+for stub_name in voxtype omarchy-hw-vulkan hyprctl omarchy-restart-shell omarchy-notification-send omarchy-dictation-use systemctl; do
   cat >"$test_bin/$stub_name" <<'EOF'
 #!/bin/bash
 exit 0
@@ -61,7 +71,7 @@ EOF
 done
 
 chmod +x "$test_bin/gum" "$test_bin/omarchy-pkg-add" "$test_bin/omarchy-pkg-drop" \
-  "$test_bin/omarchy-cmd-present" "$test_bin/pacman" "$test_bin/sudo"
+  "$test_bin/omarchy-cmd-present" "$test_bin/omarchy-cmd-missing" "$test_bin/pacman" "$test_bin/sudo"
 
 run_voxtype() {
   : >"$log_file"
@@ -87,13 +97,24 @@ assert_logged() {
   pass "$description"
 }
 
-run_voxtype omarchy-voxtype-install yes
-assert_logged "pkg-add:wtype" "dictation install adds only wtype when the voxtype command is already present"
+assert_not_logged() {
+  local prefix=$1
+  local description=$2
+  local actual
 
-run_voxtype omarchy-voxtype-install no
+  (( run_status == 0 )) || fail "$description" "$run_output"
+  actual=$(grep "^${prefix}:" "$log_file" || true)
+  [[ -z $actual ]] || fail "$description" "$actual"
+  pass "$description"
+}
+
+run_voxtype omarchy-install-dictation-voxtype yes
+assert_not_logged "pkg-add" "dictation install leaves an existing voxtype command in place"
+
+run_voxtype omarchy-install-dictation-voxtype no
 assert_logged "pkg-add:wtype voxtype-bin" "dictation install adds wtype and voxtype-bin when the voxtype command is absent"
 
-run_voxtype omarchy-voxtype-remove yes
+run_voxtype omarchy-remove-dictation-voxtype yes
 assert_logged "pkg-drop:voxtype-bin voxtype-bin-rc voxtype" "dictation removal drops every voxtype package"
 
 require_command node
@@ -104,9 +125,9 @@ dictation_guards=$(node -e '
   const menu = require(path.join(process.env.ROOT, "shell/plugins/menu/MenuModel.js"))
   const items = menu.parseMenuJsonc(fs.readFileSync(path.join(process.env.ROOT, "default/omarchy/omarchy-menu.jsonc"), "utf8"))
   const byId = Object.fromEntries(items.map(item => [item.id, item]))
-  process.stdout.write(byId["install.ai.dictation"].disabled + "\n" + byId["remove.ai.dictation"].when)
+  process.stdout.write(byId["remove.dictation"].when + "\n" + byId["remove.dictation.voxtype"].when)
 ')
 
-[[ $dictation_guards == $'omarchy-cmd-present voxtype\nomarchy-cmd-present voxtype' ]] ||
+[[ $dictation_guards == $'omarchy-cmd-present voxtype || omarchy-pkg-present superwhisper-bin\nomarchy-cmd-present voxtype' ]] ||
   fail "dictation menu guards follow the voxtype command" "$dictation_guards"
 pass "dictation menu guards follow the voxtype command"
