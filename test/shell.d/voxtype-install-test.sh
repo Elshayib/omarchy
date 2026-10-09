@@ -78,6 +78,7 @@ run_voxtype() {
   run_status=0
   run_output=$(
     HOME="$test_home" \
+      XDG_CONFIG_HOME="$test_home/.config" \
       OMARCHY_PATH="$ROOT" \
       PATH="$test_bin:$PATH" \
       TEST_LOG="$log_file" \
