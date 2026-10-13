@@ -5,6 +5,7 @@ import Quickshell.Wayland
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "BarModel.js" as BarModel
 
@@ -44,7 +45,7 @@ Item {
   property string omarchyConfigDir: home + "/.config/omarchy"
   property var fallbackBarConfig: ({
     position: "top",
-    transparent: false,
+    background: "opaque",
     centerAnchor: "omarchy.clock",
     layout: { left: [], center: [], right: [] }
   })
@@ -53,6 +54,12 @@ Item {
   property bool requestedTransparent: false
   property bool useTransparentForeground: false
   property bool transparent: false
+  // A see-through bar that Hyprland blurs behind (the bar-glassy toggle), so
+  // its theme background stays faintly. A transparent bar wins over it.
+  property bool glassy: false
+  // The look the blur behind the bar was last synced for. A background set by
+  // editing shell.json skips the CLI, so the bar syncs Hyprland's blur itself.
+  property string glassSyncedLook: ""
   property bool centerSectionHovered: false
   // One bar surface exists per monitor and each reports into this count, so a
   // pointer crossing from one monitor's bar to another's stays counted however
@@ -71,18 +78,19 @@ Item {
   property string fontFamily: Style.font.family
   // Bound to the central Color singleton so the bar tracks shell.toml's
   // [bar] section. Property names kept for the rest of this file's bindings.
-  property color themeForeground: Color.bar.text
-  property color themeContrastForeground: Color.background
-  property color transparentForeground: Color.bar.text
+  property color themeForeground: Commons.Color.bar.text
+  property color themeContrastForeground: Commons.Color.background
+  property color transparentForeground: Commons.Color.bar.text
   property color foreground: themeForeground
   property color barForeground: useTransparentForeground ? transparentForeground : themeForeground
   property bool foregroundAnimationEnabled: true
-  property color background: Color.bar.background
-  property color urgent: Color.bar.active
+  property color background: Commons.Color.bar.background
+  readonly property color glassBackground: Qt.rgba(background.r, background.g, background.b, Math.min(background.a, 0.35))
+  property color urgent: Commons.Color.bar.active
 
-  Behavior on barForeground { enabled: root.foregroundAnimationEnabled; ColorAnimation { duration: Style.duration(420); easing.type: Easing.InOutCubic } }
-  Behavior on background { ColorAnimation { duration: Style.duration(420); easing.type: Easing.InOutCubic } }
-  Behavior on urgent { ColorAnimation { duration: Style.duration(420); easing.type: Easing.InOutCubic } }
+  Behavior on barForeground { enabled: root.foregroundAnimationEnabled; ColorAnimation { duration: Style.duration(420); easing.type: Easing.OutCubic } }
+  Behavior on background { ColorAnimation { duration: Style.duration(420); easing.type: Easing.OutCubic } }
+  Behavior on urgent { ColorAnimation { duration: Style.duration(420); easing.type: Easing.OutCubic } }
   property var tooltipTarget: null
   property var pendingTooltipTarget: null
   property string tooltipText: ""
@@ -110,7 +118,11 @@ Item {
   property var clickTargets: []
   property var moduleSlots: []
   property var pluginBarApis: ({})
-  property var pluginObjectOwners: []
+  // target -> { target, pluginId, clickTarget, popout }. Keyed by object so a
+  // registration edits one entry in place instead of copying and rescanning an
+  // array in QML; Qt's Map still finds a key by a native linear scan.
+  readonly property var pluginObjectOwners: new Map()
+  property bool pluginBarApiSyncQueued: false
 
   Component {
     id: pluginBarApiComponent
@@ -138,20 +150,20 @@ Item {
     root.syncPluginBarApiObjects(api)
   }
 
-  function syncPluginBarApiObjects(api) {
+  // Each api keeps its own detached copy of the layout. A flush serialises
+  // the layout once and passes the string in so it is not re-serialised for
+  // every plugin.
+  function syncPluginBarApiObjects(api, layoutSnapshot) {
     if (!api) return
     api.activePopout = root.pluginOwnsBarObject(api.pluginId, root.activePopout)
       ? root.activePopout : (root.activePopout ? api.foreignPopoutMarker : null)
     api.clickTargets = root.pluginClickTargets(api.pluginId)
-    api.layoutConfig = root.publicLayoutConfig()
+    api.layoutConfig = layoutSnapshot !== undefined
+      ? JSON.parse(layoutSnapshot) : root.publicLayoutConfig()
   }
 
   function pluginObjectRecord(target) {
-    for (var i = 0; i < pluginObjectOwners.length; i++) {
-      var record = pluginObjectOwners[i]
-      if (record && record.target === target) return record
-    }
-    return null
+    return target ? (pluginObjectOwners.get(target) || null) : null
   }
 
   function markPluginObject(pluginId, target, role) {
@@ -159,31 +171,20 @@ Item {
     if (!key || !target) return false
     var record = root.pluginObjectRecord(target)
     if (record && record.pluginId !== key) return false
-    var next = []
-    for (var i = 0; i < pluginObjectOwners.length; i++) {
-      var existing = pluginObjectOwners[i]
-      if (!existing || existing.target !== target) next.push(existing)
+    if (!record) {
+      record = { target: target, pluginId: key, clickTarget: false, popout: false }
+      pluginObjectOwners.set(target, record)
     }
-    var updated = record || { target: target, pluginId: key, clickTarget: false, popout: false }
-    updated[role] = true
-    next.push(updated)
-    pluginObjectOwners = next
+    record[role] = true
     return true
   }
 
   function unmarkPluginObject(pluginId, target, role) {
     var key = String(pluginId || "")
-    var next = []
-    for (var i = 0; i < pluginObjectOwners.length; i++) {
-      var record = pluginObjectOwners[i]
-      if (!record || record.target !== target || record.pluginId !== key) {
-        next.push(record)
-        continue
-      }
-      record[role] = false
-      if (record.clickTarget || record.popout) next.push(record)
-    }
-    pluginObjectOwners = next
+    var record = root.pluginObjectRecord(target)
+    if (!record || record.pluginId !== key) return
+    record[role] = false
+    if (!record.clickTarget && !record.popout) pluginObjectOwners.delete(target)
   }
 
   function pluginOwnsBarObject(pluginId, target) {
@@ -200,8 +201,25 @@ Item {
     return out
   }
 
+  // Every click target registration, popout change and layout change used to
+  // resync every plugin api synchronously. Startup alone is hundreds of
+  // registrations, each walking every api and every target, so coalesce them
+  // into one resync per event-loop turn (as onModuleSlotsChanged already does
+  // for prunePluginBarApis). bindPluginBarApi still syncs a brand-new api
+  // directly so a widget never sees an empty api on its first read.
+  function schedulePluginBarApiSync() {
+    if (pluginBarApiSyncQueued) return
+    pluginBarApiSyncQueued = true
+    Qt.callLater(root.syncAllPluginBarApiObjects)
+  }
+
   function syncAllPluginBarApiObjects() {
-    for (var id in pluginBarApis) root.syncPluginBarApiObjects(pluginBarApis[id])
+    pluginBarApiSyncQueued = false
+    var layoutSnapshot = JSON.stringify(root.layoutConfig || {})
+    for (var id in pluginBarApis) {
+      var api = pluginBarApis[id]
+      if (api) root.syncPluginBarApiObjects(api, layoutSnapshot)
+    }
   }
 
   function registerPluginClickTarget(pluginId, target) {
@@ -215,15 +233,20 @@ Item {
     root.unmarkPluginObject(pluginId, target, "clickTarget")
   }
 
+  // A plugin may read api.activePopout right after asking for its popout, so
+  // its own api is brought up to date inline; everyone else waits for the
+  // coalesced resync.
   function requestPluginPopout(pluginId, owner) {
     if (!root.markPluginObject(pluginId, owner, "popout")) return
     root.requestPopout(owner)
+    root.syncPluginBarApiObjects(pluginBarApis[String(pluginId || "")])
   }
 
   function releasePluginPopout(pluginId, owner) {
     if (!root.pluginOwnsBarObject(pluginId, owner)) return
     root.releasePopout(owner)
     root.unmarkPluginObject(pluginId, owner, "popout")
+    root.syncPluginBarApiObjects(pluginBarApis[String(pluginId || "")])
   }
 
   function pluginBarApiFor(pluginId, moduleName, registered) {
@@ -287,16 +310,14 @@ Item {
   }
 
   function releasePluginObjects(pluginId) {
-    var owned = pluginObjectOwners.slice()
+    var owned = Array.from(pluginObjectOwners.values())
     for (var i = 0; i < owned.length; i++) {
       var record = owned[i]
       if (!record || record.pluginId !== pluginId) continue
       if (record.clickTarget) root.unregisterClickTarget(record.target)
       if (record.popout && root.activePopout === record.target) root.releasePopout(record.target)
+      pluginObjectOwners.delete(record.target)
     }
-    pluginObjectOwners = pluginObjectOwners.filter(function(record) {
-      return record && record.pluginId !== pluginId
-    })
   }
 
   function prunePluginBarApis() {
@@ -313,9 +334,9 @@ Item {
     pluginBarApis = next
   }
 
-  onActivePopoutChanged: syncAllPluginBarApiObjects()
-  onClickTargetsChanged: syncAllPluginBarApiObjects()
-  onLayoutConfigChanged: syncAllPluginBarApiObjects()
+  onActivePopoutChanged: schedulePluginBarApiSync()
+  onClickTargetsChanged: schedulePluginBarApiSync()
+  onLayoutConfigChanged: schedulePluginBarApiSync()
   onModuleSlotsChanged: Qt.callLater(prunePluginBarApis)
 
   Component.onDestruction: {
@@ -555,6 +576,61 @@ Item {
   readonly property bool vertical: position === "left" || position === "right"
   readonly property int barSize: vertical ? Style.bar.sizeVertical : Style.bar.sizeHorizontal
 
+  // Display cutouts (a camera notch) the platform's own package describes in
+  // the fixed platform root, which no environment variable moves. Most machines
+  // have none. It is read as the shell starts (blockLoading), so a bar surface
+  // knows before it maps whether its screen may have one. See
+  // BarModel.parseCutouts.
+  readonly property var displayCutouts: displayCutoutsFile.missing ? [] : BarModel.parseCutouts(displayCutoutsFile.text())
+  FileView {
+    id: displayCutoutsFile
+
+    // A file that went away describes nothing, whatever text() still holds.
+    property bool missing: false
+
+    path: "/usr/share/omarchy-platform/display-cutouts.json"
+    blockLoading: true
+    watchChanges: true
+    printErrors: false
+    onLoaded: missing = false
+    onLoadFailed: missing = true
+    onFileChanged: reload()
+  }
+
+  // The physical mode Hyprland reports for a screen, as hyprctl monitors does.
+  // Qt's whole-number devicePixelRatio can't rebuild it at a fractional scale.
+  function panelModeFor(screen) {
+    var monitor = screen ? Hyprland.monitorFor(screen) : null
+    return monitor ? ({
+      width: monitor.width,
+      height: monitor.height,
+      transform: monitor.lastIpcObject ? monitor.lastIpcObject.transform : 0
+    }) : null
+  }
+
+  // How thick the bar is on a screen. A top bar shorter than a panel's camera
+  // cutout leaves a sliver of every window peeking out beside the camera, so
+  // the cutout is this panel's minimum sensible top-bar height. An
+  // intentionally taller bar still wins.
+  function thicknessFor(screen) {
+    if (root.vertical || !screen) return root.barSize
+    return Math.max(root.barSize, BarModel.notchFloor(root.displayCutouts, root.position, screen.name, screen.width, screen.height, screen.devicePixelRatio, root.panelModeFor(screen), Style.bar.notchHeight))
+  }
+
+  // Each screen's bar thickness, by screen name: barSize, or more where a notch
+  // floor raises a top bar. Toasts and plugins clear the bar by it; barSize
+  // stays the configured size the widgets are drawn at.
+  readonly property var screenBarSizes: {
+    var sizes = ({})
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) sizes[screens[i].name] = root.thicknessFor(screens[i])
+    return sizes
+  }
+
+  function barSizeFor(screenName) {
+    return BarModel.barSizeFor(root.screenBarSizes, screenName, root.barSize)
+  }
+
   function normalizePosition(value) {
     return BarModel.normalizePosition(value)
   }
@@ -582,7 +658,18 @@ Item {
     var config = Util.isPlainObject(barConfig) ? barConfig : fallbackBarConfig
 
     position = normalizePosition(config.position)
-    setRequestedTransparency(config.transparent === true)
+    // opaque, glassy or none; a config from before background says
+    // transparent instead.
+    var look = config.background || (config.transparent === true ? "none" : "opaque")
+    setRequestedTransparency(look === "none")
+    // A bar going clear waits for its text color before dropping its
+    // background, so a glassy one stays glassy until then rather than
+    // flashing opaque. Once clear, transparent wins over a stale glassy.
+    if (look !== "none") glassy = look === "glassy"
+    if (look !== glassSyncedLook) {
+      glassSyncedLook = look
+      Util.execDetached("omarchy-bar sync-glass")
+    }
     centerAnchor = Util.canonicalWidgetId(config.centerAnchor || "")
 
     // layoutEntries feeds plain JS arrays to the module Repeaters, and QML
@@ -844,16 +931,10 @@ Item {
     Util.execDetached(command)
   }
 
-  function toggleTransparency() {
-    var nextTransparent = !(root.requestedTransparent === true)
-    if (root.shell && typeof root.shell.mutateShellConfig === "function") {
-      root.shell.mutateShellConfig(function(config) {
-        if (!Util.isPlainObject(config.bar)) config.bar = {}
-        config.bar.transparent = nextTransparent
-      })
-    } else {
-      root.setRequestedTransparency(nextTransparent)
-    }
+  // Steps the bar background from clear to glassy to opaque and around. Through
+  // omarchy-bar, which keeps Hyprland's blur behind a glassy bar in step.
+  function cycleBackground() {
+    Util.execDetached("omarchy-bar background cycle")
   }
 
   function rawLayoutSection(config, region) {
@@ -1239,7 +1320,12 @@ Item {
     // reveal has to rebuild them — new surface, re-shaped glyphs, re-uploaded
     // textures — which measures ~150ms against ~20ms to tear down. Parking
     // keeps the surface alive, so showing is only a margin change.
-    visible: !remapGuard.remapping
+    //
+    // A top bar that can't tell its notch floor yet waits for Hyprland's mode
+    // before it maps (see BarModel.cutoutPending), so it maps at its floor
+    // instead of growing once the windows are laid out. The wait ends once, for
+    // good: when the mode settles it, or after two seconds without one.
+    visible: !remapGuard.remapping && (cutoutWaitOver || !cutoutPending)
     exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Auto
 
     ScreenMoveRemap {
@@ -1247,11 +1333,13 @@ Item {
       window: barWindow
     }
 
+    // Parked by its full thickness, which a notch floor may make more than
+    // barSize, so no strip of it stays on screen.
     margins {
-      top: root.barHidden && root.position === "top" ? -root.barSize : 0
-      bottom: root.barHidden && root.position === "bottom" ? -root.barSize : 0
-      left: root.barHidden && root.position === "left" ? -root.barSize : 0
-      right: root.barHidden && root.position === "right" ? -root.barSize : 0
+      top: root.barHidden && root.position === "top" ? -barWindow.thickness : 0
+      bottom: root.barHidden && root.position === "bottom" ? -barWindow.thickness : 0
+      left: root.barHidden && root.position === "left" ? -barWindow.thickness : 0
+      right: root.barHidden && root.position === "right" ? -barWindow.thickness : 0
     }
 
     anchors {
@@ -1261,9 +1349,27 @@ Item {
       right: root.position === "right" || !root.vertical
     }
 
-    implicitWidth: root.vertical ? root.barSize : 0
-    implicitHeight: root.vertical ? 0 : root.barSize
-    color: root.transparent ? "transparent" : root.background
+    readonly property var panelMode: root.panelModeFor(screen)
+
+    readonly property bool centerBesideRight: BarModel.centerBesideRight(root.displayCutouts, root.position, screen.name, screen.width, screen.height, screen.devicePixelRatio, panelMode)
+
+    readonly property bool cutoutPending: BarModel.cutoutPending(root.displayCutouts, root.position, screen.name, screen.width, screen.height, screen.devicePixelRatio, panelMode)
+    property bool cutoutWaitOver: false
+    onCutoutPendingChanged: if (!cutoutPending) cutoutWaitOver = true
+    Component.onCompleted: if (!cutoutPending) cutoutWaitOver = true
+
+    Timer {
+      interval: 2000
+      running: barWindow.cutoutPending && !barWindow.cutoutWaitOver
+      onTriggered: barWindow.cutoutWaitOver = true
+    }
+
+    // The same thickness the bar publishes for its screen (screenBarSizes).
+    readonly property int thickness: root.thicknessFor(screen)
+
+    implicitWidth: root.vertical ? thickness : 0
+    implicitHeight: root.vertical ? 0 : thickness
+    color: root.transparent ? "transparent" : (root.glassy ? root.glassBackground : root.background)
     surfaceFormat.opaque: false
     WlrLayershell.namespace: "omarchy-bar"
     WlrLayershell.layer: WlrLayer.Top
@@ -1329,8 +1435,8 @@ Item {
         id: tooltipBubble
         implicitWidth: tooltipLabel.implicitWidth + 20
         implicitHeight: tooltipLabel.implicitHeight + 14
-        color: Color.tooltip.background
-        borderSpec: Border.surfaceSpec("tooltip", "border", Color.tooltip.border, 1)
+        color: Commons.Color.tooltip.background
+        borderSpec: Border.surfaceSpec("tooltip", "border", Commons.Color.tooltip.border, 1)
         radius: Style.cornerRadius
 
         Text {
@@ -1338,7 +1444,7 @@ Item {
           textFormat: Text.PlainText
           anchors.centerIn: parent
           text: root.tooltipText
-          color: Color.tooltip.text
+          color: Commons.Color.tooltip.text
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           horizontalAlignment: Text.AlignHCenter
@@ -1353,7 +1459,10 @@ Item {
       Item {
         anchors.fill: parent
 
-        CenterModules { anchors.fill: parent }
+        CenterModules {
+          anchors.fill: parent
+          entries: barWindow.centerBesideRight ? [] : root.layoutEntries("center")
+        }
 
         LeftModules {
           anchors.left: parent.left
@@ -1362,8 +1471,20 @@ Item {
         }
 
         RightModules {
+          id: rightModules
           anchors.right: parent.right
           anchors.rightMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        // Keeps the center region, so settings pushes, drag and drop, and panel
+        // routing still address it. The gap lets a drop at the seam land in
+        // the section the pointer is nearer to.
+        ModuleList {
+          entries: barWindow.centerBesideRight ? root.layoutEntries("center") : []
+          region: "center"
+          anchors.right: rightModules.left
+          anchors.rightMargin: Style.space(4)
           anchors.verticalCenter: parent.verticalCenter
         }
       }
@@ -1457,7 +1578,7 @@ Item {
       y: targetRect ? Math.round(targetRect.y) : 0
       width: targetRect ? targetRect.width : 0
       height: targetRect ? targetRect.height : 0
-      color: Color.accent
+      color: Commons.Color.accent
       radius: Math.min(width, height) / 2
     }
   }
@@ -1515,8 +1636,7 @@ Item {
     }
   }
 
-  function findCenterAnchorEntry() {
-    var entries = root.layoutEntries("center")
+  function findCenterAnchorEntry(entries) {
     var idx = root.entryIndex(entries, root.centerAnchor)
     return idx === -1 ? null : entries[idx]
   }
@@ -1536,7 +1656,7 @@ Item {
 
     property var entries: root.layoutEntries("center")
     readonly property bool hasAnchor: root.entryIndex(entries, root.centerAnchor) !== -1
-    readonly property var anchorEntry: root.findCenterAnchorEntry()
+    readonly property var anchorEntry: root.findCenterAnchorEntry(entries)
 
     Loader {
       anchors.fill: parent
@@ -1551,8 +1671,15 @@ Item {
 
         CenterGestureArea { anchors.fill: parent }
 
-        HoverHandler {
-          onHoveredChanged: root.setCenterSectionHovered(hovered)
+        Item {
+          anchors.left: parent.left
+          anchors.right: centerRoot.hasAnchor ? centerAnchorModule.left : parent.right
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+
+          HoverHandler {
+            onHoveredChanged: root.setCenterSectionHovered(hovered)
+          }
         }
 
         ModuleList {
@@ -1596,8 +1723,15 @@ Item {
 
         CenterGestureArea { anchors.fill: parent }
 
-        HoverHandler {
-          onHoveredChanged: root.setCenterSectionHovered(hovered)
+        Item {
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: centerRoot.hasAnchor ? centerAnchorModule.top : parent.bottom
+
+          HoverHandler {
+            onHoveredChanged: root.setCenterSectionHovered(hovered)
+          }
         }
 
         ModuleList {
@@ -1710,7 +1844,7 @@ Item {
         return
       }
       if (mouse.button === Qt.LeftButton) {
-        root.toggleTransparency()
+        root.cycleBackground()
         mouse.accepted = true
       }
     }
@@ -1878,7 +2012,7 @@ Item {
 
       visible: opacity > 0
       opacity: slot.panelOpen && !slot.dragSource ? 0.9 : 0
-      color: Color.accent
+      color: Commons.Color.accent
       radius: Math.min(width, height) / 2
       width: root.vertical ? Style.space(2) : slot.panelIndicatorExtent
       height: root.vertical ? slot.panelIndicatorExtent : Style.space(2)
@@ -1886,11 +2020,12 @@ Item {
       // desktop — so it underlines a top bar, overlines a bottom one, and
       // points inward from a left or right one. It reads as pointing at the
       // panel that opens on that side.
+      // Snap toward the start of the slot, matching native glyph rendering.
       x: root.vertical
         ? (root.position === "left" ? parent.width - width - inset : inset)
-        : Math.round((parent.width - width) / 2)
+        : Math.floor((parent.width - width) / 2)
       y: root.vertical
-        ? Math.round((parent.height - height) / 2)
+        ? Math.floor((parent.height - height) / 2)
         : (root.position === "top" ? parent.height - height - inset : inset)
       z: 50
 
@@ -1913,7 +2048,9 @@ Item {
       acceptedButtons: Qt.LeftButton
       enabled: slot.visible && slot.width > 0 && slot.height > 0
       propagateComposedEvents: true
-      cursorShape: root.moduleClickTargetAt(slot, mouseX, mouseY) ? Qt.PointingHandCursor : Qt.ArrowCursor
+      // Only the hovered slot needs the hit test; without the guard every
+      // slot on every monitor re-ran it on each click target change.
+      cursorShape: moduleHover.hovered && root.moduleClickTargetAt(slot, mouseX, mouseY) ? Qt.PointingHandCursor : Qt.ArrowCursor
       // Do not assign drag.target here: ModuleSlot is owned by Row/Column
       // positioners, and mutating slot.x/slot.y can leave stale offsets that
       // make neighboring modules overlap after a small aborted drag.

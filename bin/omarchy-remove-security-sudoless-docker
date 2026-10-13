@@ -30,5 +30,5 @@ echo ""
 # The migration reuses this command during 'omarchy update' and defers the
 # reboot to omarchy-update-restart, so it doesn't cut the update short.
 if [[ -z ${OMARCHY_DEFER_REBOOT:-} ]] && gum confirm "Reboot now to apply?"; then
-  omarchy-system-reboot
+  omarchy-system reboot
 fi

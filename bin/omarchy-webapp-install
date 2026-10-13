@@ -234,6 +234,13 @@ if [[ -n $MIME_TYPES ]]; then
   printf 'MimeType=%s\n' "$(desktop_string_escape "$MIME_TYPES")" >>"$DESKTOP_FILE"
 fi
 
+# Floating titlebars name the window after this entry rather than its page
+# title, and the dock finds the entry for its windows by it. A custom Exec,
+# such as HEY's mailto handler, still opens the web app at this URL.
+if [[ -n $APP_URL ]]; then
+  printf 'StartupWMClass=%s\n' "$(desktop_string_escape "$(omarchy-webapp-window-class "$APP_URL")")" >>"$DESKTOP_FILE"
+fi
+
 chmod +x "$DESKTOP_FILE"
 
 if [[ $INTERACTIVE_MODE == "true" ]]; then

@@ -78,7 +78,7 @@ case "$gpu_mode" in
     # Remove the startup delay override (not needed for Hybrid mode)
     sudo rm -rf /etc/systemd/system/supergfxd.service.d/delay-start.conf
 
-    omarchy-system-reboot
+    omarchy-system reboot
   fi
   ;;
 "Hybrid")
@@ -109,7 +109,7 @@ case "$gpu_mode" in
       -e 's/"vfio_enable": false/"vfio_enable": true/' \
       /etc/supergfxd.conf
 
-    omarchy-system-reboot
+    omarchy-system reboot
   fi
   ;;
 *)

@@ -42,7 +42,7 @@ if gum confirm "Enable sudoless Docker? This gives anything running as you passw
   # The migration reuses this command during 'omarchy update' and defers the
   # reboot to omarchy-update-restart, so it doesn't cut the update short.
   if [[ -z ${OMARCHY_DEFER_REBOOT:-} ]] && gum confirm "Reboot now to apply?"; then
-    omarchy-system-reboot
+    omarchy-system reboot
   fi
 else
   echo "Aborted. No changes made. Docker access still goes through a prompt."
