@@ -52,6 +52,10 @@ cat >"$tmp_dir/bin/tailscale" <<'SH'
 #!/bin/bash
 printf 'tailscale %s\n' "$*" >>"$CALL_LOG"
 if [[ $1 == "debug" && $2 == "prefs" ]]; then
+  if (( ${STUB_PREFS_STATUS:-0} != 0 )); then
+    echo "Failed to connect to tailscaled" >&2
+    exit "$STUB_PREFS_STATUS"
+  fi
   printf '{"OperatorUser":"%s"}\n' "${STUB_OPERATOR:-}"
   exit 0
 fi
@@ -127,6 +131,26 @@ if grep -q 'systemctl' "$CALL_LOG"; then
   fail "migration touches the receiver after a failed operator set"
 fi
 pass "migration stays pending when setting the operator fails"
+
+: >"$CALL_LOG"
+
+# A stopped daemon must leave this repair pending without changing privileges
+# or touching the receiver based on preferences the migration could not read.
+if USER=omarchy-test \
+PATH="$tmp_dir/bin:$PATH" \
+CALL_LOG="$CALL_LOG" \
+STUB_PREFS_STATUS=1 \
+  bash -euo pipefail "$migration" >"$tmp_dir/output" 2>&1; then
+  fail "migration treats unreadable Tailscale preferences as success"
+fi
+printf 'tailscale debug prefs\n' >"$tmp_dir/expected"
+cmp -s "$CALL_LOG" "$tmp_dir/expected" ||
+  fail "migration changes operator or receiver after failing to read preferences" "$(cat "$CALL_LOG")"
+grep -q 'Could not read Tailscale preferences: Failed to connect to tailscaled' "$tmp_dir/output" ||
+  fail "migration does not report why preferences could not be read"
+grep -q 'will be retried by omarchy-migrate' "$tmp_dir/output" ||
+  fail "migration does not explain retry after unreadable preferences"
+pass "migration stays pending without side effects when Tailscale preferences cannot be read"
 
 : >"$CALL_LOG"
 
