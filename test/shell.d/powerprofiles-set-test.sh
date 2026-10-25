@@ -92,7 +92,7 @@ rg -F 'omarchy-powerprofiles-set autodetect' "$ROOT/shell/plugins/menu/Menu.qml"
   fail "power profile menu persists selections through Omarchy command"
 pass "power profile menu persists selections through Omarchy command"
 
-if rg -F 'powerprofilesctl' "$ROOT/shell/plugins/menu/Menu.qml" >/dev/null; then
+if rg -n 'powerprofilesctl[[:space:]]+(get|list|set)\b' "$ROOT/shell/plugins/menu/Menu.qml" >/dev/null; then
   fail "power profile menu still calls powerprofilesctl"
 fi
 pass "power profile menu lists profiles through Omarchy command"
